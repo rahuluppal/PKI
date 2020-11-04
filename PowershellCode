@@ -1,0 +1,131 @@
+Author: Rahul Uppal
+###########################Define Variables################################## 
+ 
+$reportpath = "C:\Scripts\PKI\expiringcerts.html"  
+ 
+if((test-path $reportpath) -like $false) 
+{ 
+new-item $reportpath -type file 
+} 
+$smtphost = "SMTP.Domain.com"  
+$from = "PKIAdmin@Domain.com"  
+$to = "Admin@Domain.com"
+$timeout = "90" 
+
+ 
+###############################HTml Report Content############################ 
+
+$servers=(Get-ADComputer -Filter {operatingsystem -like '*server*'}).Name
+ 
+$result=@()
+ 
+foreach ($i in $servers)
+ 
+{
+ 
+$ErrorActionPreference="SilentlyContinue"
+ 
+$a=Invoke-Command -ComputerName $i {Get-ChildItem Cert:\LocalMachine\My -Recurse |
+Where-Object {$_ -is [System.Security.Cryptography.X509Certificates.X509Certificate2] -and $_.NotAfter -gt (Get-Date) -and $_.NotAfter -lt (Get-Date).AddDays(30)}
+ 
+}
+ 
+foreach ($c in $a) {
+ 
+$result+=New-Object -TypeName PSObject -Property ([ordered]@{
+'Server'=$i;
+'Issued By'=$c.Issuer;
+'Expires'=$c.NotAfter;
+'Thumbprint'=$c.Thumbprint;
+'IssuedTo'=$c.Subject;
+
+ 
+})
+ 
+}
+ 
+}
+ 
+$result | export-csv -Path C:\Scripts\PKI\expiringcerts.csv -NoTypeInformation
+
+# convert csv to html
+
+
+function ConvertTo-HTMLTable ($obj) {
+    # add type needed to replace HTML special characters into entities
+    Add-Type -AssemblyName System.Web
+
+    $sb = New-Object -TypeName System.Text.StringBuilder
+    [void]$sb.AppendLine('<table>')
+    if ($null -ne $obj) {
+        $headers = $obj[0].PSObject.Properties | Select -ExpandProperty Name
+        [void]$sb.AppendLine('<thead><tr>')
+        foreach ($column in $headers) {
+            [void]$sb.Append(('<th>{0}</th>' -f [System.Web.HttpUtility]::HtmlEncode($column)))
+        }
+        [void]$sb.AppendLine('</tr></thead><tbody>')
+        [double]$num = 0
+        $obj | ForEach-Object {
+            foreach ($column in $headers) {
+                [string]$val = $_.$column
+                # test if $val contains a number, and if so check if it is less than 5 or greater than 80
+                if ([double]::TryParse($val, [System.Globalization.NumberStyles]::Float, 
+                                       [System.Globalization.CultureInfo]::InvariantCulture, [ref]$num)) {
+                    # it's a numeric value, see it we need to change color
+                    $td = if ($num -gt 80 -or $num -lt 5) {"<td style=color:red;>$val</td>"} else {"<td>$val</td>"}
+                }
+                elseif ([string]::IsNullOrWhiteSpace($val)) { 
+                    $td = '<td>&nbsp;</td>' 
+} 
+                else { 
+                    $td = '<td>{0}</td>' -f [System.Web.HttpUtility]::HtmlEncode($val)
+                }
+                [void]$sb.Append($td)
+            }
+            [void]$sb.AppendLine('</tr>')
+        }
+        [void]$sb.AppendLine('</tbody>')
+    }
+    [void]$sb.AppendLine('</table>')
+
+    return $sb.ToString()
+}
+
+
+
+$css = @"
+<style>
+h1, h5, th, td { text-align: center; font-family: Segoe UI; }
+table { margin: auto; font-family: Segoe UI; box-shadow: 10px 10px 5px #888; border: thin ridge grey; }
+th { background: #0046c3; color: #fff; max-width: 400px; padding: 5px 10px; }
+td { font-size: 11px; padding: 5px 20px; color: #000; }
+tr { background: #b8d1f3; }
+tr:nth-child(even){ background: #dae5f4; }
+</style>
+"@
+
+$body1  = "<h1>Expiring Certificates</h1>`r`n<h5>Generated on $(Get-Date)</h5>"
+$table = ConvertTo-HTMLTable (Import-CSV C:\Scripts\PKI\expiringcerts.csv)
+$html  = @"
+<!DOCTYPE html>
+<html>
+<head>
+<title>Report</title>
+<meta name="generator" content="PowerShell" />
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+$css
+</head>
+<body>
+$body1
+$table
+</body></html>
+"@
+
+$html | Out-File "C:\Scripts\PKI\expiringcerts.html" -Force
+# send mail
+$subject = "DOMAIN - Expiring certs"  
+$body = Get-Content "C:\Scripts\PKI\expiringcerts.html"  
+$smtp= New-Object System.Net.Mail.SmtpClient $smtphost  
+$msg = New-Object System.Net.Mail.MailMessage $from, $to, $subject, $body  
+$msg.isBodyhtml = $true  
+$smtp.send($msg) 
